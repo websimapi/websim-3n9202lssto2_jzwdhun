@@ -19,19 +19,25 @@ function fbm(x, y, z, octaves = 3, lacunarity = 2.0, gain = 0.5) {
 // Helper to get height offset for the rocky underside of the island
 export function calculateIslandBottomHeight(x, y, z, R, phi, maxPhi) {
     // Phi ranges from maxPhi to maxPhi * 2 for the bottom
-    // We normalize it so 0 is the coast and 1 is the bottom center
+    // t: 0 at the coast, 1 at the bottom center point
     const t = (phi - maxPhi) / maxPhi;
-    const radial = 1.0 - t; // 1 at coast, 0 at bottom tip
 
-    // Base conical shape tapering downwards (negative offset)
-    // The bottom center will be about 0.3 * R deep
-    let baseH = - (1.0 - radial) * (R * 0.3);
+    // Use a square root curve for the base to make the volume "filled in" (bulging rather than conical)
+    // We increase depth to 0.45 * R for a more dramatic floating island look
+    let baseH = - Math.sqrt(t) * (R * 0.45);
 
-    // Add chunky rock noise
-    const rockNoise = fbm(x * 0.5, y * 0.5, z * 0.5, 3);
-    const detail = rockNoise * (R * 0.08) * Math.sin(radial * Math.PI);
+    // Dynamic Jagged Detail:
+    // 1. Large chunky blocky noise
+    const chunks = fbm(x * 0.3, y * 0.3, z * 0.3, 2) * (R * 0.15);
+    
+    // 2. Sharp ridge noise (inverted absolute fbm) for jaggedness
+    const ridgeNoise = 1.0 - Math.abs(fbm(x * 1.5, y * 1.5, z * 1.5, 3));
+    const sharpEdges = ridgeNoise * (R * 0.1);
 
-    return baseH + detail;
+    // Mask noise so it doesn't disrupt the smooth waterline at the coast (t=0)
+    const noiseMask = THREE.MathUtils.smoothstep(t, 0.0, 0.2);
+    
+    return baseH + (chunks + sharpEdges) * noiseMask;
 }
 
 // Helper to get height offset at a point on the "North Pole" cap
