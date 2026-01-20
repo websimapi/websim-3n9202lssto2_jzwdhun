@@ -247,7 +247,7 @@ export class IslandGenerator {
         if (hBase <= 0.001) return { height: 0, normal: direction.clone() };
         
         // 4. Calculate Normal (Finite Difference approximation in Base Space)
-        const eps = 0.1;
+        const eps = 0.25; // Smoother normals for snake movement
         const hx = calculateIslandHeight(px + eps, py, pz, this.baseRadius, this.currentSeed, this.currentSizeScale);
         const hz = calculateIslandHeight(px, py, pz + eps, this.baseRadius, this.currentSeed, this.currentSizeScale);
         

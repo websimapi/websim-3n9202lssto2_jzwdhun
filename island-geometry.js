@@ -79,49 +79,57 @@ export function calculateIslandHeight(x, y, z, R, seed = 0, sizeScale = 1.0) {
     const currentR = Math.sqrt(x*x + z*z);
     const coastLimit = getCoastLimit(theta, R, seed, sizeScale);
     
-    // Normalize radial distance
+    // Normalize radial distance (0 at center, 1 at edge)
     const rNorm = currentR / coastLimit;
     
     if (rNorm >= 1.0) {
-        // Underwater slope
-        // Fall off gently
-        const slope = (rNorm - 1.0) * (R * 0.5);
-        return -slope; // Negative height (underwater)
+        // Underwater slope - gentle falloff
+        const slope = (rNorm - 1.0) * (R * 0.3);
+        return -slope; 
     }
     
-    // Inland Generation
-    // Height increases towards center but with variation
-    const centerFactor = 1.0 - Math.pow(rNorm, 2.0); // Parabolic rise
+    // Distance from coast (0 at edge, 1 at center)
+    const d = 1.0 - rNorm;
     
-    // Base Plateau Height
-    const maxH = R * 0.25 * sizeScale;
+    // Profile: Expansive Beach -> Cliff/Slope -> Flat Plateau
+    const beachWidth = 0.35; // Wider beach
     
-    // Terrain Noise
-    const terrain = fbm(x * 0.5 + seed, y * 0.5, z * 0.5, 4, 2.0, 0.4);
+    // 1. Beach Rise (Very gentle)
+    let h = 0;
+    if (d < beachWidth) {
+        // Linear gentle rise
+        h = (d / beachWidth) * (R * 0.03);
+    } else {
+        // 2. Plateau Rise
+        const hBeachTop = R * 0.03;
+        const plateauHeight = R * 0.15 * sizeScale; // Flatter plateau
+        const riseWidth = 0.15; // Width of slope to plateau
+        
+        const t = Math.min(1.0, (d - beachWidth) / riseWidth);
+        const smoothT = t * t * (3 - 2 * t);
+        
+        h = hBeachTop + smoothT * plateauHeight;
+    }
     
-    // Mountains logic: amplify noise in center
-    const mountainMask = Math.max(0, centerFactor - 0.2);
-    const mountains = Math.max(0, fbm(x*0.8 + seed + 50, z*0.8, y*0.8, 3)) * R * 0.4;
+    // 3. Noise (Reduced for smoothness/pathing)
+    const terrain = fbm(x * 0.25 + seed, y * 0.25, z * 0.25, 3, 2.0, 0.5);
+    h += terrain * (R * 0.02); 
     
-    let h = (centerFactor * maxH * 0.5) + (terrain * R * 0.1) + (mountains * mountainMask);
-    
-    // River Generation
-    const riverNoise = noise3D(x * 0.2 + seed, z * 0.2, seed * 2);
-    // River path is where noise is close to 0
+    // 4. River Generation
+    const riverNoise = noise3D(x * 0.15 + seed, z * 0.15, seed * 2);
     const riverVal = Math.abs(riverNoise);
-    const riverWidth = 0.05 * sizeScale;
+    const riverWidth = 0.07 * sizeScale;
     
     if (riverVal < riverWidth) {
-        // Dig river
-        const depth = (riverWidth - riverVal) / riverWidth; // 0 to 1
-        h -= depth * R * 0.08;
-        // Flatten to water level if deep enough
-        if (h < 0.01 * R) h = -0.01 * R; 
+        const depth = (riverWidth - riverVal) / riverWidth;
+        const dig = depth * depth * (3 - 2 * depth);
+        h -= dig * (R * 0.06);
+        if (h < -0.005 * R) h = -0.005 * R; 
     }
     
-    // Ensure beaches are flat-ish near water
-    if (h > 0 && h < 0.05 * R) {
-        h *= 0.6; // Flatten low areas
+    // Smoothing at water edge
+    if (d < 0.05 && h > 0) {
+        h *= smoothstep(0.0, 0.05, d);
     }
 
     return h;
@@ -190,31 +198,29 @@ export function createIslandMesh(radius, seed = 0, sizeScale = 1.0) {
         let c = new THREE.Color();
         const hRel = hOffset / radius; // Normalized height relative to radius
         
-        if (isBottom || hRel < -0.05) {
+        if (isBottom || hRel < -0.02) {
             // Underside or deep water
             c.copy(cUnderRock);
-            // Add rocky noise
             const rockNoise = noise3D(x, y, z);
             c.offsetHSL(0, 0, rockNoise * 0.1);
-        } else if (hRel < 0.0) {
-             // Shallow water / Coast
-             // Blend sand into water
-             c.copy(cWetSand).lerp(cDeepWater, Math.abs(hRel) * 20.0);
+        } else if (hRel < 0.005) {
+             // Shallow water / Wet Sand
+             c.copy(cWetSand).lerp(cDeepWater, Math.abs(hRel) * 50.0);
         } else {
             // Land Biomes
-            // 1. Moisture Map
-            const moisture = fbm(x * 0.2 + seed, y * 0.2, z * 0.2, 2) + 0.5; // 0 to 1 approx
-            // 2. Temperature/Detail Map
-            const temp = noise3D(x * 0.5 - seed, z * 0.5, seed);
-
-            if (hRel < 0.05) {
-                // Beach
+            const moisture = fbm(x * 0.2 + seed, y * 0.2, z * 0.2, 2) + 0.5;
+            
+            // Adjust thresholds for flatter terrain
+            // Beach ends approx 0.03
+            // Plateau starts approx 0.03-0.08
+            
+            if (hRel < 0.04) {
+                // Expansive Beach
                 c.copy(cSand);
-                if (moisture > 0.6) c.lerp(cGrass, 0.3); // Grassy dunes
-                // Sand grain
+                if (moisture > 0.65) c.lerp(cGrass, 0.2); // Grassy dunes edge
                 c.offsetHSL(0, 0, (Math.random()-0.5)*0.05);
-            } else if (hRel < 0.25) {
-                // Plains / Forest
+            } else if (hRel < 0.12) {
+                // Main Plateau (Forest/Grass)
                 if (moisture < 0.35) {
                     c.copy(cDryGrass);
                 } else if (moisture < 0.65) {
@@ -222,19 +228,13 @@ export function createIslandMesh(radius, seed = 0, sizeScale = 1.0) {
                 } else {
                     c.copy(cForest);
                 }
-                
-                // Texture
                 const grassTex = noise3D(x*10, z*10, seed);
                 c.offsetHSL(0, 0, grassTex * 0.03);
                 
-            } else if (hRel < 0.5) {
-                // High Altitude / Mountain Base
-                c.copy(cRock);
-                c.lerp(cGrass, 0.3); // Mossy rock
             } else {
-                // Peaks
-                c.copy(cSnow);
-                c.lerp(cRock, 0.2);
+                // Rocky Outcrops (rare now)
+                c.copy(cRock);
+                c.lerp(cGrass, 0.4);
             }
         }
         
