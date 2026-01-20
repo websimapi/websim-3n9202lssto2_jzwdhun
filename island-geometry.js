@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { noise3D } from './math-utils.js';
 
-export const ISLAND_ANGULAR_RADIUS = Math.PI / 2.2; // ~81 degrees for very wide island
+export const ISLAND_ANGULAR_RADIUS = Math.PI / 2.2; 
 
 // Simple FBM for better terrain detail
 function fbm(x, y, z, octaves = 3, lacunarity = 2.0, gain = 0.5) {
@@ -16,94 +16,121 @@ function fbm(x, y, z, octaves = 3, lacunarity = 2.0, gain = 0.5) {
     return total;
 }
 
-// Helper to get height offset for the rocky underside of the island
-export function calculateIslandBottomHeight(x, y, z, R, phi, maxPhi, seed = 0) {
-    const t = (phi - maxPhi) / maxPhi;
-
-    // Deeper, craggier bottom to counterbalance the taller top
-    let baseH = -Math.pow(t, 0.6) * (R * 0.9); 
-
-    const sx = x + seed;
-    const sy = y + seed;
-    const sz = z + seed;
-
-    // Chunky but smoother noise
-    const chunks = fbm(sx * 0.3, sy * 0.3, sz * 0.3, 2) * (R * 0.3);
+// Calculate the radial extent of the island at a given angle, making the coastline irregular
+function getCoastLimit(theta, R, seed, sizeScale) {
+    // Map theta to 2D noise circle
+    const cx = Math.cos(theta);
+    const cz = Math.sin(theta);
     
-    // Less sharp ridges, more rolling rock formations
-    const ridgeNoise = fbm(sx * 0.8, sy * 0.8, sz * 0.8, 2);
-    const detail = ridgeNoise * (R * 0.1);
-
-    const noiseMask = THREE.MathUtils.smoothstep(t, 0.05, 0.3) * (1.0 - THREE.MathUtils.smoothstep(t, 0.95, 1.0));
+    // Low freq shape noise (The main irregular blobs)
+    const shapeNoise = noise3D(cx * 1.5 + seed, cz * 1.5 + seed, seed * 0.1);
     
-    return baseH + (chunks + detail) * noiseMask;
+    // Med freq noise (coastline jaggedness)
+    const jagged = noise3D(cx * 4 + seed, cz * 4 + seed, seed + 20);
+    
+    // Combine
+    // Base coverage is about 60-70% of the mesh radius, scaled by sizeScale
+    let limit = R * 0.65 * sizeScale;
+    
+    // Add variations
+    limit *= (1.0 + 0.3 * shapeNoise + 0.05 * jagged);
+    
+    return limit;
 }
 
-export function calculateIslandHeight(x, y, z, R, seed = 0) {
-    const sx = x + seed;
-    const sy = y + seed;
-    const sz = z + seed;
+// Helper to get height offset for the rocky underside of the island
+export function calculateIslandBottomHeight(x, y, z, R, phi, maxPhi, seed = 0, sizeScale = 1.0) {
+    // Current radial distance from center (approx)
+    const theta = Math.atan2(z, x);
+    const coastLimit = getCoastLimit(theta, R, seed, sizeScale);
+    
+    // Current radius on plane
+    const currentR = Math.sqrt(x*x + z*z);
+    
+    // Normalize distance relative to coast
+    // If currentR > coastLimit, we are outside the main chunk, taper fast
+    const t = currentR / coastLimit;
 
-    // 1. Domain Warping for Organic Shape
-    // Reduced frequency for smoother, larger shapes
-    const warpFreq = 0.4;
-    const warpAmp = R * 0.25; 
+    // Rock depth
+    // Deepest part is at center (t=0), depth ~ R*0.6
+    let depth = R * 0.6 * sizeScale;
     
-    const dx = fbm(sx * warpFreq, sy * warpFreq, sz * warpFreq + 10.0, 2);
-    const dz = fbm(sx * warpFreq, sy * warpFreq, sz * warpFreq + 20.0, 2);
+    // Cone shape + noise
+    let baseH = -depth * Math.max(0, 1.0 - Math.pow(t, 2.0));
     
-    const wx = x + dx * warpAmp;
-    const wz = z + dz * warpAmp;
+    // Add cragginess
+    const crag = fbm(x * 0.4, y * 0.4, z * 0.4, 3) * (R * 0.2);
     
-    // Use distorted coordinates for radius check
-    const dist = Math.sqrt(wx*wx + wz*wz);
-    const landRadius = R * 0.95; // Maximize land usage
+    // Taper crag near edges
+    baseH += crag * Math.max(0, 1.0 - t);
     
-    // 2. River Generation
-    const riverFreq = 0.3;
-    const rVal = fbm(sx * riverFreq + 50, sy * riverFreq + 50, sz * riverFreq + 50, 2);
-    const riverWidth = 0.08;
-    const riverMask = 1.0 - THREE.MathUtils.smoothstep(0.0, riverWidth, Math.abs(rVal));
-    
-    // 3. Radial Gradient (The main shape)
-    let radial = 1.0 - (dist / landRadius);
-    
-    // 4. Height Profile
-    let h = 0;
-    // Significantly taller island (was 0.08)
-    const plateauHeightVal = 0.20 * R; 
-    
-    if (radial > 0) {
-        // Curve: stays low for beach, then rises steeply to plateau
-        // Power 1.2 keeps it lower near the water for a wider beach effect
-        let landProfile = Math.pow(radial, 1.2) * plateauHeightVal;
-        
-        // Add Hills - stronger and more defined
-        const hillNoise = fbm(wx * 0.5, sy * 0.5, wz * 0.5, 3); 
-        landProfile += Math.max(0, hillNoise) * 0.12 * R;
-        
-        // Apply River
-        if (riverMask > 0.01) {
-            const riverBed = -0.015 * R;
-            // Smoother lerp for river banks
-            const riverInfluence = THREE.MathUtils.smoothstep(riverMask, 0.0, 1.0);
-            h = THREE.MathUtils.lerp(landProfile, riverBed, riverInfluence);
-        } else {
-            h = landProfile;
-        }
+    // If outside limit, force clamp to 0 (water level) to meet top
+    if (t > 1.0) {
+        // Taper quickly to 0
+        const falloff = 1.0 - Math.min((t - 1.0) * 5.0, 1.0);
+        baseH *= falloff;
+    }
 
-    } else {
-         // Underwater slope - gentler for better transition
-         h = radial * 1.2 * R; 
+    return baseH;
+}
+
+export function calculateIslandHeight(x, y, z, R, seed = 0, sizeScale = 1.0) {
+    const theta = Math.atan2(z, x);
+    const currentR = Math.sqrt(x*x + z*z);
+    const coastLimit = getCoastLimit(theta, R, seed, sizeScale);
+    
+    // Normalize radial distance
+    const rNorm = currentR / coastLimit;
+    
+    if (rNorm >= 1.0) {
+        // Underwater slope
+        // Fall off gently
+        const slope = (rNorm - 1.0) * (R * 0.5);
+        return -slope; // Negative height (underwater)
     }
     
+    // Inland Generation
+    // Height increases towards center but with variation
+    const centerFactor = 1.0 - Math.pow(rNorm, 2.0); // Parabolic rise
+    
+    // Base Plateau Height
+    const maxH = R * 0.25 * sizeScale;
+    
+    // Terrain Noise
+    const terrain = fbm(x * 0.5 + seed, y * 0.5, z * 0.5, 4, 2.0, 0.4);
+    
+    // Mountains logic: amplify noise in center
+    const mountainMask = Math.max(0, centerFactor - 0.2);
+    const mountains = Math.max(0, fbm(x*0.8 + seed + 50, z*0.8, y*0.8, 3)) * R * 0.4;
+    
+    let h = (centerFactor * maxH * 0.5) + (terrain * R * 0.1) + (mountains * mountainMask);
+    
+    // River Generation
+    const riverNoise = noise3D(x * 0.2 + seed, z * 0.2, seed * 2);
+    // River path is where noise is close to 0
+    const riverVal = Math.abs(riverNoise);
+    const riverWidth = 0.05 * sizeScale;
+    
+    if (riverVal < riverWidth) {
+        // Dig river
+        const depth = (riverWidth - riverVal) / riverWidth; // 0 to 1
+        h -= depth * R * 0.08;
+        // Flatten to water level if deep enough
+        if (h < 0.01 * R) h = -0.01 * R; 
+    }
+    
+    // Ensure beaches are flat-ish near water
+    if (h > 0 && h < 0.05 * R) {
+        h *= 0.6; // Flatten low areas
+    }
+
     return h;
 }
 
-export function createIslandMesh(radius, seed = 0) {
-    // High resolution mesh
-    const widthSegs = 256;
-    const heightSegs = 256;
+export function createIslandMesh(radius, seed = 0, sizeScale = 1.0) {
+    // High resolution mesh for detail
+    const widthSegs = 200;
+    const heightSegs = 200;
     
     const geometry = new THREE.SphereGeometry(
         radius, 
@@ -117,14 +144,16 @@ export function createIslandMesh(radius, seed = 0) {
     const count = posAttribute.count;
     const colors = [];
     
-    // Colors
-    const cDeepSand = new THREE.Color(0xcc9966);
-    const cBeach = new THREE.Color(0xffcc88);
-    const cGrass = new THREE.Color(0x55aa55);
-    const cForest = new THREE.Color(0x227722);
-    const cRock = new THREE.Color(0x444444);
-    const cDeepRock = new THREE.Color(0x1a1a1a);
-    const cRiverBed = new THREE.Color(0x8B4513); // Muddy river bottom
+    // Palette
+    const cDeepWater = new THREE.Color(0x224488);
+    const cSand = new THREE.Color(0xf0e68c);      // Khaki
+    const cWetSand = new THREE.Color(0xd2b48c);   // Tan
+    const cGrass = new THREE.Color(0x55aa55);     // Green
+    const cDryGrass = new THREE.Color(0x88aa55);  // Yellow-Green
+    const cForest = new THREE.Color(0x226622);    // Dark Green
+    const cRock = new THREE.Color(0x666666);      // Grey
+    const cSnow = new THREE.Color(0xffffff);      // White
+    const cUnderRock = new THREE.Color(0x333333); // Dark Grey
 
     const v = new THREE.Vector3();
 
@@ -133,91 +162,80 @@ export function createIslandMesh(radius, seed = 0) {
         let y = posAttribute.getY(i);
         let z = posAttribute.getZ(i);
 
-        // Calculate current phi to distinguish top from bottom
+        // Determine polar position
         const row = Math.floor(i / (widthSegs + 1));
+        // phi goes from 0 (top) to 2*ANGULAR_RADIUS (bottom)
         const phi = (row / heightSegs) * (ISLAND_ANGULAR_RADIUS * 2.0);
         
-        let hOffset = 0;
         let isBottom = phi > ISLAND_ANGULAR_RADIUS;
+        let hOffset = 0;
         
-        // Fix for closing the bottom mesh
-        // If this is the last row, force vertices to a single point at the tip
-        // We stretch the geometry to 180 deg effectively
+        // Handle bottom vertex singularity
         if (row === heightSegs) {
-            x = 0;
-            z = 0;
-            y = -radius; // Placeholder, will be displaced
+            x = 0; z = 0; y = -radius;
             isBottom = true;
         }
 
-        // Use a temp vector for noise calculations to avoid 0,0,0 issues if needed
-        // but passing 0,0,0 to noise is fine.
-        
         if (!isBottom) {
-            hOffset = calculateIslandHeight(x, y, z, radius, seed);
+            hOffset = calculateIslandHeight(x, y, z, radius, seed, sizeScale);
         } else {
-            hOffset = calculateIslandBottomHeight(x, y, z, radius, phi, ISLAND_ANGULAR_RADIUS, seed);
+            hOffset = calculateIslandBottomHeight(x, y, z, radius, phi, ISLAND_ANGULAR_RADIUS, seed, sizeScale);
         }
         
-        // Final Position
-        // For the tip (row === heightSegs), x/z are 0. vector is (0, -1, 0).
-        // hOffset for bottom is negative. 
-        // We set length to R + hOffset.
+        // Apply height
         v.set(x, y, z).normalize().multiplyScalar(radius + hOffset);
         posAttribute.setXYZ(i, v.x, v.y, v.z);
         
-        // Coloring Logic
+        // --- Biome Coloring ---
         let c = new THREE.Color();
-        const hNorm = hOffset / radius;
+        const hRel = hOffset / radius; // Normalized height relative to radius
         
-        if (!isBottom) {
-            // Add high-frequency noise for sand grain texture
-            const grain = noise3D(x * 60 + seed, y * 60, z * 60);
+        if (isBottom || hRel < -0.05) {
+            // Underside or deep water
+            c.copy(cUnderRock);
+            // Add rocky noise
+            const rockNoise = noise3D(x, y, z);
+            c.offsetHSL(0, 0, rockNoise * 0.1);
+        } else if (hRel < 0.0) {
+             // Shallow water / Coast
+             // Blend sand into water
+             c.copy(cWetSand).lerp(cDeepWater, Math.abs(hRel) * 20.0);
+        } else {
+            // Land Biomes
+            // 1. Moisture Map
+            const moisture = fbm(x * 0.2 + seed, y * 0.2, z * 0.2, 2) + 0.5; // 0 to 1 approx
+            // 2. Temperature/Detail Map
+            const temp = noise3D(x * 0.5 - seed, z * 0.5, seed);
 
-            if (hNorm < -0.01) {
-                // Deep River Bed
-                c.copy(cRiverBed);
-                c.multiplyScalar(0.6);
-            } else if (hNorm < 0.015) {
-                // Waterline / Wet Sand (darker, smoother)
-                c.copy(cDeepSand);
-                c.lerp(cBeach, THREE.MathUtils.smoothstep(hNorm, 0.0, 0.015));
-                c.offsetHSL(0, 0, grain * 0.04); 
-            } else if (hNorm < 0.06) {
-                // Beautiful Wide Beach
-                c.copy(cBeach);
-                // Sparkling dry sand
-                c.offsetHSL(0, 0, grain * 0.1); 
-                
-                // Natural sand variation patches
-                const sandVar = noise3D(x*2 + seed, y*2, z*2);
-                c.offsetHSL(0.02 * sandVar, 0.05 * sandVar, 0);
-
-                // Soft transition to grass
-                c.lerp(cGrass, THREE.MathUtils.smoothstep(hNorm, 0.05, 0.06));
-            } else {
-                // Lush High Grass
-                c.copy(cGrass);
-                const noiseVar = noise3D(x*0.3 + seed, y*0.3, z*0.3);
-                
-                // Richer green variation
-                c.offsetHSL(0.05 * noiseVar, 0.1 * noiseVar, noiseVar * 0.05);
-                
-                // Forest density increases with height/noise
-                if (noiseVar > 0.15) {
-                    c.lerp(cForest, (noiseVar - 0.15) * 2.5);
+            if (hRel < 0.05) {
+                // Beach
+                c.copy(cSand);
+                if (moisture > 0.6) c.lerp(cGrass, 0.3); // Grassy dunes
+                // Sand grain
+                c.offsetHSL(0, 0, (Math.random()-0.5)*0.05);
+            } else if (hRel < 0.25) {
+                // Plains / Forest
+                if (moisture < 0.35) {
+                    c.copy(cDryGrass);
+                } else if (moisture < 0.65) {
+                    c.copy(cGrass);
+                } else {
+                    c.copy(cForest);
                 }
                 
-                c.offsetHSL(0, 0, grain * 0.03);
+                // Texture
+                const grassTex = noise3D(x*10, z*10, seed);
+                c.offsetHSL(0, 0, grassTex * 0.03);
+                
+            } else if (hRel < 0.5) {
+                // High Altitude / Mountain Base
+                c.copy(cRock);
+                c.lerp(cGrass, 0.3); // Mossy rock
+            } else {
+                // Peaks
+                c.copy(cSnow);
+                c.lerp(cRock, 0.2);
             }
-        } else {
-            // Bottom Rock Colors
-            const bottomProgress = (phi - ISLAND_ANGULAR_RADIUS) / ISLAND_ANGULAR_RADIUS;
-            c.copy(cRock);
-            c.lerp(cDeepRock, THREE.MathUtils.smoothstep(bottomProgress, 0.0, 1.0));
-            // Add rocky texture variation
-            const rVar = noise3D(x * 0.8 + seed, y * 0.8, z * 0.8);
-            c.offsetHSL(0, 0, rVar * 0.05);
         }
         
         colors.push(c.r, c.g, c.b);

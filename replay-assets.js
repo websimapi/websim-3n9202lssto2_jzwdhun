@@ -163,5 +163,5 @@ export const createIslandMesh = (radius) => {
     // Replay mesh might differ if we don't store seed. 
     // Ideally we should store seed in replay data.
     // For now, generate a generic one or use default seed 0.
-    return createGeoMesh(radius, 0);
+    return createGeoMesh(radius, 0, 1.0);
 };

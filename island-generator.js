@@ -53,9 +53,14 @@ export class IslandGenerator {
         
         // 2. Generate Proper Mesh with Random Seed for Variety
         const seed = Math.random() * 1000;
-        this.createMesh(this.baseRadius, seed);
-        // Save seed for physics calculations
+        // Dynamic Size: 0.7 to 1.3
+        const sizeScale = 0.7 + Math.random() * 0.6;
+        
+        this.createMesh(this.baseRadius, seed, sizeScale);
+        
+        // Save parameters for physics calculations
         this.currentSeed = seed;
+        this.currentSizeScale = sizeScale;
         
         // 3. Start Animation
         this.state = 'spawning';
@@ -63,7 +68,7 @@ export class IslandGenerator {
         this.mesh.visible = true;
     }
 
-    createMesh(radius) {
+    createMesh(radius, seed, sizeScale) {
         if (this.mesh) {
             this.scene.remove(this.mesh);
             if(this.mesh.geometry) this.mesh.geometry.dispose();
@@ -71,7 +76,7 @@ export class IslandGenerator {
         }
 
         // Generate the detailed terrain mesh
-        this.mesh = createIslandMesh(radius);
+        this.mesh = createIslandMesh(radius, seed, sizeScale);
         
         // Inject Sand Physics Shader
         this.mesh.material.onBeforeCompile = (shader) => {
@@ -237,14 +242,14 @@ export class IslandGenerator {
         const pz = localDir.z * this.baseRadius;
         
         // 3. Get Base Height
-        const hBase = calculateIslandHeight(px, py, pz, this.baseRadius);
+        const hBase = calculateIslandHeight(px, py, pz, this.baseRadius, this.currentSeed, this.currentSizeScale);
         
         if (hBase <= 0.001) return { height: 0, normal: direction.clone() };
         
         // 4. Calculate Normal (Finite Difference approximation in Base Space)
         const eps = 0.1;
-        const hx = calculateIslandHeight(px + eps, py, pz, this.baseRadius);
-        const hz = calculateIslandHeight(px, py, pz + eps, this.baseRadius);
+        const hx = calculateIslandHeight(px + eps, py, pz, this.baseRadius, this.currentSeed, this.currentSizeScale);
+        const hz = calculateIslandHeight(px, py, pz + eps, this.baseRadius, this.currentSeed, this.currentSizeScale);
         
         // Slopes
         const dhdx = (hx - hBase) / eps;
