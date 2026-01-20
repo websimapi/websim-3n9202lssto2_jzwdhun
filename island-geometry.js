@@ -52,14 +52,14 @@ export function calculateIslandBottomHeight(x, y, z, R, phi, maxPhi, seed = 0, s
     const t = currentR / coastLimit;
 
     // Rock depth
-    // Deepest part is at center (t=0), depth ~ R*0.6
-    let depth = R * 0.6 * sizeScale;
+    // Deepest part is at center (t=0), significantly reduced from 0.6 to 0.25
+    let depth = R * 0.25 * sizeScale;
     
-    // Cone shape + noise
-    let baseH = -depth * Math.max(0, 1.0 - Math.pow(t, 2.0));
+    // Cone shape + noise (Power 3 for steeper taper near top, less bulbous)
+    let baseH = -depth * Math.max(0, 1.0 - Math.pow(t, 3.0));
     
     // Add cragginess
-    const crag = fbm(x * 0.4, y * 0.4, z * 0.4, 3) * (R * 0.2);
+    const crag = fbm(x * 0.4, y * 0.4, z * 0.4, 3) * (R * 0.15); // Reduced noise amp
     
     // Taper crag near edges
     baseH += crag * Math.max(0, 1.0 - t);
@@ -91,45 +91,47 @@ export function calculateIslandHeight(x, y, z, R, seed = 0, sizeScale = 1.0) {
     // Distance from coast (0 at edge, 1 at center)
     const d = 1.0 - rNorm;
     
-    // Profile: Expansive Beach -> Cliff/Slope -> Flat Plateau
-    const beachWidth = 0.35; // Wider beach
+    // Smoother Profile from Beach to Plateau
     
-    // 1. Beach Rise (Very gentle)
-    let h = 0;
-    if (d < beachWidth) {
-        // Linear gentle rise
-        h = (d / beachWidth) * (R * 0.03);
-    } else {
-        // 2. Plateau Rise
-        const hBeachTop = R * 0.03;
-        const plateauHeight = R * 0.15 * sizeScale; // Flatter plateau
-        const riseWidth = 0.15; // Width of slope to plateau
-        
-        const t = Math.min(1.0, (d - beachWidth) / riseWidth);
-        const smoothT = t * t * (3 - 2 * t);
-        
-        h = hBeachTop + smoothT * plateauHeight;
-    }
+    // Base slope for beach (very subtle rise)
+    const beachRise = d * (R * 0.02);
     
-    // 3. Noise (Reduced for smoothness/pathing)
+    // Main landmass rise (smoothstep starting inland at d=0.3)
+    const landStart = 0.3;
+    const landEnd = 0.6;
+    const landEase = THREE.MathUtils.smoothstep(d, landStart, landEnd);
+    const landRise = landEase * (R * 0.12 * sizeScale);
+    
+    let h = beachRise + landRise;
+    
+    // 3. Noise (Reduced for smoothness on beach)
+    // Fade in noise as we go inland so beach stays sandy smooth
+    const noiseAmp = THREE.MathUtils.smoothstep(d, 0.2, 0.5);
     const terrain = fbm(x * 0.25 + seed, y * 0.25, z * 0.25, 3, 2.0, 0.5);
-    h += terrain * (R * 0.02); 
+    h += terrain * (R * 0.02) * noiseAmp; 
     
     // 4. River Generation
     const riverNoise = noise3D(x * 0.15 + seed, z * 0.15, seed * 2);
     const riverVal = Math.abs(riverNoise);
-    const riverWidth = 0.07 * sizeScale;
+    const riverWidth = 0.08 * sizeScale; 
     
     if (riverVal < riverWidth) {
-        const depth = (riverWidth - riverVal) / riverWidth;
-        const dig = depth * depth * (3 - 2 * depth);
-        h -= dig * (R * 0.06);
-        if (h < -0.005 * R) h = -0.005 * R; 
+        // 0 at bank, 1 at center
+        const t = (riverWidth - riverVal) / riverWidth;
+        // Smooth channel shape
+        const dig = t * t * (3 - 2 * t);
+        
+        // Force height down to underwater level at river center
+        // Target height is slightly below zero to let natural blue water sphere show
+        const bedHeight = -0.02 * R;
+        
+        // Blend current height to bed height based on dig strength
+        h = THREE.MathUtils.lerp(h, bedHeight, dig);
     }
     
     // Smoothing at water edge
-    if (d < 0.05 && h > 0) {
-        h *= THREE.MathUtils.smoothstep(d, 0.0, 0.05);
+    if (d < 0.02 && h > 0) {
+        h *= THREE.MathUtils.smoothstep(d, 0.0, 0.02);
     }
 
     return h;
