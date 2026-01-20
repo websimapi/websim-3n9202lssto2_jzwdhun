@@ -102,26 +102,39 @@ export class IslandGenerator {
 
                 vIsBeach = 0.0;
                 #ifdef USE_COLOR
-                    if (color.r > 0.6 && color.g > 0.5) {
+                    // Identify beach by color characteristic (high red/green, approx yellowish)
+                    if (color.r > 0.6 && color.g > 0.5 && color.b < 0.8) {
                         vIsBeach = 1.0;
                     }
                 #endif
 
                 if (vIsBeach > 0.5 && uSnakeCount > 0) {
-                    vec3 accumulatedOffset = vec3(0.0);
+                    float totalDisplacement = 0.0;
+                    vec3 pushDir = vec3(0.0);
+                    
                     for(int i = 0; i < 20; i++) {
                         if (i >= uSnakeCount) break;
                         vec3 sPos = uSnakePoints[i];
                         float dist = distance(worldPosition.xyz, sPos);
-                        float radius = 1.5 * uGlobalScale;
+                        float radius = 1.2 * uGlobalScale;
+                        
                         if (dist < radius) {
-                            float strength = pow(1.0 - (dist / radius), 2.0);
-                            vec3 dir = normalize(worldPosition.xyz - sPos);
-                            accumulatedOffset += dir * strength * 0.5 * uGlobalScale;
-                            accumulatedOffset += normal * strength * 0.35 * uGlobalScale;
+                            float t = dist / radius;
+                            // Furrow shape: Center = deep (-1), Edge = high (+0.6)
+                            float dig = -1.0 * smoothstep(0.6, 0.0, t);
+                            float pile = 0.6 * smoothstep(1.0, 0.4, t) * smoothstep(0.0, 0.5, t);
+                            
+                            totalDisplacement += (dig + pile);
+                            
+                            vec3 fromSnake = normalize(worldPosition.xyz - sPos);
+                            pushDir += fromSnake * pile; 
                         }
                     }
-                    transformed += accumulatedOffset;
+                    
+                    totalDisplacement = clamp(totalDisplacement, -0.6, 0.4);
+                    
+                    transformed += normal * totalDisplacement * 0.4 * uGlobalScale;
+                    transformed += pushDir * 0.2 * uGlobalScale;
                 }
                 `
             );
@@ -133,6 +146,10 @@ export class IslandGenerator {
                 uniform float uRippleIntensities[5];
                 varying vec3 vWorldPos;
                 varying float vIsBeach;
+                
+                float random(vec3 scale, float seed) {
+                    return fract(sin(dot(gl_FragCoord.xyz + seed, scale)) * 43758.5453 + seed);
+                }
                 
                 float getRippleAt(vec3 pos) {
                     float total = 0.0;
@@ -166,11 +183,20 @@ export class IslandGenerator {
                 '#include <dithering_fragment>',
                 `#include <dithering_fragment>
                 if (vIsBeach > 0.5) {
+                    // Add Sparkly Grain
+                    float noiseVal = random(vec3(12.9898, 78.233, 151.7182), 0.0);
+                    if (noiseVal > 0.8) {
+                        gl_FragColor.rgb += vec3(0.15, 0.15, 0.1) * (noiseVal - 0.8) * 5.0;
+                    }
+                
                     float rVal = getRippleAt(vWorldPos);
                     if (abs(rVal) > 0.05) {
                         float wet = smoothstep(0.05, 0.3, abs(rVal));
                         vec3 wetColor = gl_FragColor.rgb * 0.6 + vec3(0.1, 0.2, 0.3) * 0.2;
                         gl_FragColor.rgb = mix(gl_FragColor.rgb, wetColor, wet * 0.8);
+                        if (wet > 0.5) {
+                            gl_FragColor.rgb += vec3(0.1) * wet;
+                        }
                     }
                 }`
             );
