@@ -226,10 +226,9 @@ export class IslandGenerator {
         const localDir = direction.clone().applyQuaternion(invQ); // Should be near (0, 1, 0)
 
         // Fix ghost island on opposite side:
-        // Projecting sphere surface to XZ plane (used in calculateIslandHeight) is ambiguous for poles (both 0,0).
         // We restrict island influence to the top hemisphere (localDir.y > threshold).
-        // Island radius is ~72 deg => cos(72) ~ 0.3. We use 0.2 as a safe cutoff to ignore the antipode.
-        if (localDir.y < 0.2) return { height: 0, normal: direction.clone() };
+        // Island radius is ~81 deg => cos(81) ~ 0.15. We use 0.05 as a safe cutoff to cover the full island width.
+        if (localDir.y < 0.05) return { height: 0, normal: direction.clone() };
         
         // 2. Calculate coordinates on the BASE sphere
         // localDir is normalized. We map it to the BASE radius to check noise consistency

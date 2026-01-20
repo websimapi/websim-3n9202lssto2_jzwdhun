@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { noise3D } from './math-utils.js';
 
-export const ISLAND_ANGULAR_RADIUS = Math.PI / 2.5; // ~72 degrees for more expansive island
+export const ISLAND_ANGULAR_RADIUS = Math.PI / 2.2; // ~81 degrees for very wide island
 
 // Simple FBM for better terrain detail
 function fbm(x, y, z, octaves = 3, lacunarity = 2.0, gain = 0.5) {
@@ -20,9 +20,8 @@ function fbm(x, y, z, octaves = 3, lacunarity = 2.0, gain = 0.5) {
 export function calculateIslandBottomHeight(x, y, z, R, phi, maxPhi, seed = 0) {
     const t = (phi - maxPhi) / maxPhi;
 
-    // Smoother conical/bowl shape for floating island look
-    // Less of a sharp spike, more of a heavy base
-    let baseH = -Math.pow(t, 0.7) * (R * 0.6); 
+    // Deeper, craggier bottom to counterbalance the taller top
+    let baseH = -Math.pow(t, 0.6) * (R * 0.9); 
 
     const sx = x + seed;
     const sy = y + seed;
@@ -58,12 +57,12 @@ export function calculateIslandHeight(x, y, z, R, seed = 0) {
     
     // Use distorted coordinates for radius check
     const dist = Math.sqrt(wx*wx + wz*wz);
-    const landRadius = R * 0.85; // Slightly larger landmass
+    const landRadius = R * 0.95; // Maximize land usage
     
     // 2. River Generation
     const riverFreq = 0.3;
     const rVal = fbm(sx * riverFreq + 50, sy * riverFreq + 50, sz * riverFreq + 50, 2);
-    const riverWidth = 0.07;
+    const riverWidth = 0.08;
     const riverMask = 1.0 - THREE.MathUtils.smoothstep(0.0, riverWidth, Math.abs(rVal));
     
     // 3. Radial Gradient (The main shape)
@@ -71,17 +70,17 @@ export function calculateIslandHeight(x, y, z, R, seed = 0) {
     
     // 4. Height Profile
     let h = 0;
-    const plateauHeightVal = 0.08 * R; 
+    // Significantly taller island (was 0.08)
+    const plateauHeightVal = 0.20 * R; 
     
     if (radial > 0) {
-        // Smooth base land curve
-        // Using smoothstep to create a gentle rise from the beach
-        let landProfile = THREE.MathUtils.smoothstep(radial, 0.0, 0.4) * plateauHeightVal;
+        // Curve: stays low for beach, then rises steeply to plateau
+        // Power 1.2 keeps it lower near the water for a wider beach effect
+        let landProfile = Math.pow(radial, 1.2) * plateauHeightVal;
         
-        // Add Hills - Smoother, less jagged
-        // Reduced frequency and amplitude of detail noise
-        const hillNoise = fbm(wx * 0.4, sy * 0.4, wz * 0.4, 2); 
-        landProfile += Math.max(0, hillNoise) * 0.06 * R;
+        // Add Hills - stronger and more defined
+        const hillNoise = fbm(wx * 0.5, sy * 0.5, wz * 0.5, 3); 
+        landProfile += Math.max(0, hillNoise) * 0.12 * R;
         
         // Apply River
         if (riverMask > 0.01) {
@@ -175,37 +174,41 @@ export function createIslandMesh(radius, seed = 0) {
             // Add high-frequency noise for sand grain texture
             const grain = noise3D(x * 60 + seed, y * 60, z * 60);
 
-            if (hNorm < -0.005) {
-                // River Bed / Deep Underwater
+            if (hNorm < -0.01) {
+                // Deep River Bed
                 c.copy(cRiverBed);
-                c.multiplyScalar(0.8);
-            } else if (hNorm < 0.005) {
-                // Waterline / Wet Sand
+                c.multiplyScalar(0.6);
+            } else if (hNorm < 0.015) {
+                // Waterline / Wet Sand (darker, smoother)
                 c.copy(cDeepSand);
-                // Wet sand gets less grain
-                c.offsetHSL(0, -0.1, grain * 0.03); 
-                c.lerp(cBeach, THREE.MathUtils.smoothstep(hNorm, -0.002, 0.005));
-            } else if (hNorm < 0.035) {
-                // Beach - Expanded range for nice beaches
+                c.lerp(cBeach, THREE.MathUtils.smoothstep(hNorm, 0.0, 0.015));
+                c.offsetHSL(0, 0, grain * 0.04); 
+            } else if (hNorm < 0.06) {
+                // Beautiful Wide Beach
                 c.copy(cBeach);
-                // Stronger grain for dry sand
-                c.offsetHSL(0, 0, grain * 0.08); 
+                // Sparkling dry sand
+                c.offsetHSL(0, 0, grain * 0.1); 
                 
-                // Color variation patches
-                const sandVar = noise3D(x*3 + seed, y*3, z*3);
-                c.offsetHSL(0.02 * sandVar, 0.1 * sandVar, 0);
+                // Natural sand variation patches
+                const sandVar = noise3D(x*2 + seed, y*2, z*2);
+                c.offsetHSL(0.02 * sandVar, 0.05 * sandVar, 0);
 
-                // Smooth transition to grass
-                c.lerp(cGrass, THREE.MathUtils.smoothstep(hNorm, 0.025, 0.035));
+                // Soft transition to grass
+                c.lerp(cGrass, THREE.MathUtils.smoothstep(hNorm, 0.05, 0.06));
             } else {
-                // Land
+                // Lush High Grass
                 c.copy(cGrass);
-                const noiseVar = noise3D(x*0.4 + seed, y*0.4, z*0.4);
-                c.offsetHSL(0, 0, noiseVar * 0.05);
-                if (noiseVar > 0.3) c.lerp(cForest, 0.5);
+                const noiseVar = noise3D(x*0.3 + seed, y*0.3, z*0.3);
                 
-                // Add some grain to grass too but subtle
-                c.offsetHSL(0, 0, grain * 0.02);
+                // Richer green variation
+                c.offsetHSL(0.05 * noiseVar, 0.1 * noiseVar, noiseVar * 0.05);
+                
+                // Forest density increases with height/noise
+                if (noiseVar > 0.15) {
+                    c.lerp(cForest, (noiseVar - 0.15) * 2.5);
+                }
+                
+                c.offsetHSL(0, 0, grain * 0.03);
             }
         } else {
             // Bottom Rock Colors
