@@ -129,7 +129,7 @@ export function calculateIslandHeight(x, y, z, R, seed = 0, sizeScale = 1.0) {
     
     // Smoothing at water edge
     if (d < 0.05 && h > 0) {
-        h *= smoothstep(0.0, 0.05, d);
+        h *= THREE.MathUtils.smoothstep(d, 0.0, 0.05);
     }
 
     return h;
