@@ -51,9 +51,11 @@ export class IslandGenerator {
             Math.cos(phi)
         ).normalize();
         
-        // 2. Generate Proper Mesh
-        // Always generate at base radius; we handle growth via scaling
-        this.createMesh(this.baseRadius);
+        // 2. Generate Proper Mesh with Random Seed for Variety
+        const seed = Math.random() * 1000;
+        this.createMesh(this.baseRadius, seed);
+        // Save seed for physics calculations
+        this.currentSeed = seed;
         
         // 3. Start Animation
         this.state = 'spawning';

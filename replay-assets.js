@@ -160,5 +160,8 @@ export const createSegment = (colorHex) => {
 import { createIslandMesh as createGeoMesh } from './island-geometry.js';
 
 export const createIslandMesh = (radius) => {
-    return createGeoMesh(radius);
+    // Replay mesh might differ if we don't store seed. 
+    // Ideally we should store seed in replay data.
+    // For now, generate a generic one or use default seed 0.
+    return createGeoMesh(radius, 0);
 };
